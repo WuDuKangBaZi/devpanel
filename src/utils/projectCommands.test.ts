@@ -7,6 +7,8 @@ import {
   makeUniqueId,
   resolveBindingTargets,
   resolveCommandCwd,
+  resolveProjectOpenUrl,
+  resolveSessionOpenUrl,
   slugifyId,
 } from "./projectCommands.ts";
 
@@ -88,5 +90,77 @@ describe("projectCommands helpers", () => {
   it("slugifies and creates unique IDs", () => {
     assert.equal(slugifyId(" My Web App! "), "my-web-app");
     assert.equal(makeUniqueId("api", ["api", "api-2"]), "api-3");
+  });
+
+  it("hides open URLs unless a local access URL is configured", () => {
+    assert.equal(
+      resolveSessionOpenUrl(undefined, "http://127.0.0.1:5173"),
+      undefined
+    );
+    assert.equal(
+      resolveSessionOpenUrl("   ", "http://127.0.0.1:5173"),
+      undefined
+    );
+    assert.equal(
+      resolveSessionOpenUrl("http://localhost:5173", "http://127.0.0.1:5174"),
+      "http://127.0.0.1:5174"
+    );
+    assert.equal(
+      resolveSessionOpenUrl("http://localhost:5173", undefined),
+      "http://localhost:5173"
+    );
+
+    const noUrlProject: ProjectConfig = {
+      id: "worker",
+      name: "Worker",
+      cwd: "/worker",
+      command: "python worker.py",
+    };
+    assert.equal(
+      resolveProjectOpenUrl(noUrlProject, { worker: "http://127.0.0.1:8000" }),
+      undefined
+    );
+
+    const monoNoUrl: ProjectConfig = {
+      id: "mono-no-url",
+      name: "Mono",
+      cwd: "/mono",
+      command: "pnpm dev",
+      commands: [{ id: "api", name: "API", command: "cargo run" }],
+    };
+    assert.equal(
+      resolveProjectOpenUrl(monoNoUrl, {
+        "mono-no-url::api": "http://127.0.0.1:8080",
+      }),
+      undefined
+    );
+
+    const monoPartialUrl: ProjectConfig = {
+      id: "mono",
+      name: "Mono",
+      cwd: "/mono",
+      command: "pnpm dev",
+      commands: [
+        { id: "api", name: "API", command: "cargo run" },
+        {
+          id: "web",
+          name: "Web",
+          command: "vite",
+          url: "http://localhost:5173",
+        },
+      ],
+    };
+    assert.equal(
+      resolveProjectOpenUrl(monoPartialUrl, {
+        "mono::api": "http://127.0.0.1:8080",
+      }),
+      "http://localhost:5173"
+    );
+    assert.equal(
+      resolveProjectOpenUrl(monoPartialUrl, {
+        "mono::web": "http://127.0.0.1:5174",
+      }),
+      "http://127.0.0.1:5174"
+    );
   });
 });

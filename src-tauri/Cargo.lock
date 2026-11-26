@@ -754,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "devpanel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
@@ -767,6 +767,8 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "webview2-com",
+ "windows-core",
  "windows-sys 0.59.0",
 ]
 

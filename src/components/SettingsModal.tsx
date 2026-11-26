@@ -916,6 +916,18 @@ export function SettingsModal({
                         label: m.settings.general.scOpenSettings,
                         keys: "Ctrl+,",
                       },
+                      {
+                        label: m.settings.general.scMemoryMonitor,
+                        keys: "Ctrl+M",
+                      },
+                      {
+                        label: m.settings.general.scToggleMini,
+                        keys: "Ctrl+Shift+M",
+                      },
+                      {
+                        label: m.settings.general.scTogglePin,
+                        keys: "Ctrl+Shift+T",
+                      },
                     ].map((item) => (
                       <div
                         key={item.keys}

@@ -2,6 +2,7 @@ mod commands;
 mod config;
 mod detector;
 mod i18n;
+mod memory_monitor;
 mod pty_manager;
 
 use config::ConfigManager;
@@ -18,6 +19,27 @@ use tauri::{
 pub struct ExitGuard(pub AtomicBool);
 pub struct CloseToTray(pub AtomicBool);
 pub struct ShutdownStarted(pub AtomicBool);
+
+#[cfg(windows)]
+fn harden_windows_webview(window: &tauri::WebviewWindow) {
+    let _ = window.with_webview(|webview| unsafe {
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+        use windows_core::Interface;
+
+        let controller = webview.controller();
+        if let Ok(core) = controller.CoreWebView2()
+            && let Ok(settings) = core.Settings()
+        {
+            let _ = settings.SetAreDefaultContextMenusEnabled(false);
+            let _ = settings.SetAreDevToolsEnabled(false);
+            let _ = settings.SetIsStatusBarEnabled(false);
+            let _ = settings.SetIsZoomControlEnabled(false);
+            if let Ok(settings3) = settings.cast::<ICoreWebView2Settings3>() {
+                let _ = settings3.SetAreBrowserAcceleratorKeysEnabled(false);
+            }
+        }
+    });
+}
 
 fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -111,6 +133,11 @@ pub fn run() {
 
             tray_builder.build(app)?;
 
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main") {
+                harden_windows_webview(&window);
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -165,6 +192,7 @@ pub fn run() {
             commands::set_locale,
             commands::get_platform,
             commands::check_port_in_use,
+            commands::get_memory_snapshot,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

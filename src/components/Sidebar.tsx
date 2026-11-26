@@ -23,7 +23,12 @@ import type {
   LaunchBinding,
   ProjectConfig,
   ProjectStatus,
+  SessionMemoryInfo,
 } from "../types/project";
+import {
+  formatBytesCompact,
+  getProjectTotalMemoryBytes,
+} from "../utils/memoryFormat";
 import {
   countBindingRunning,
   countRunningCommands,
@@ -32,6 +37,7 @@ import {
   isMultiCommandProject,
   makeSessionKey,
   resolveBindingTargets,
+  resolveProjectOpenUrl,
 } from "../utils/projectCommands";
 
 interface SidebarProps {
@@ -43,6 +49,7 @@ interface SidebarProps {
   bindings: LaunchBinding[];
   statuses: Record<string, ProjectStatus>;
   detectedUrls?: Record<string, string>;
+  sessionMemoryMap?: Record<string, SessionMemoryInfo>;
   selectedId: string | null;
   selectedCommandId: string | null;
   configPath: string;
@@ -146,6 +153,7 @@ export function Sidebar({
   bindings,
   statuses,
   detectedUrls,
+  sessionMemoryMap,
   selectedId,
   selectedCommandId,
   configPath,
@@ -353,12 +361,10 @@ export function Sidebar({
     const commands = project.commands ?? [];
     const runningCmdCount = countRunningCommands(project, statuses);
     const isProjectCollapsed = Boolean(collapsedProjects[project.id]);
-    const effectiveProjectUrl =
-      (isMulti
-        ? commands
-            .map((cmd) => detectedUrls?.[makeSessionKey(project.id, cmd.id)])
-            .find(Boolean)
-        : detectedUrls?.[project.id]) ?? project.url;
+    const effectiveProjectUrl = resolveProjectOpenUrl(project, detectedUrls);
+    const projectMemoryBytes = sessionMemoryMap
+      ? getProjectTotalMemoryBytes(project, sessionMemoryMap)
+      : 0;
 
     return (
       <div
@@ -460,6 +466,11 @@ export function Sidebar({
                     {m.status.ofStatus(status)}
                   </span>
                 )
+              )}
+              {isRunning && projectMemoryBytes > 0 && (
+                <span className="shrink-0 rounded border border-[var(--dp-border)] bg-[var(--dp-bg)] px-1.5 py-0.5 font-mono-dev text-[10px] tabular-nums text-[var(--dp-fg-muted)]">
+                  {formatBytesCompact(projectMemoryBytes)}
+                </span>
               )}
             </button>
 
@@ -618,6 +629,15 @@ export function Sidebar({
                             {cmd.cwd}
                           </span>
                         )}
+                        {cmdStatus !== "stopped" &&
+                          sessionMemoryMap?.[cmdKey] &&
+                          sessionMemoryMap[cmdKey].rssBytes > 0 && (
+                            <span className="shrink-0 font-mono-dev text-[10px] tabular-nums text-[var(--dp-fg-muted)]">
+                              {formatBytesCompact(
+                                sessionMemoryMap[cmdKey].rssBytes
+                              )}
+                            </span>
+                          )}
                       </button>
 
                       <div className="flex shrink-0 items-center gap-0.5 select-none">

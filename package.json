@@ -1,7 +1,7 @@
 {
   "name": "devpanel",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local multi-project & multi-command interactive PTY terminal orchestrator built with Tauri 2, React, and Rust.",
   "author": "Felix Yu <wudukangbazi@gmail.com>",
   "license": "MIT",
@@ -20,7 +20,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "tsc --noEmit",
-    "test:fe": "node --test src/utils/projectCommands.test.ts src/i18n/i18n.test.ts",
+    "test:fe": "node --test src/utils/projectCommands.test.ts src/utils/memoryFormat.test.ts src/utils/webviewGuard.test.ts src/utils/miniMode.test.ts src/i18n/i18n.test.ts",
     "check": "npm run typecheck && npm run test:fe && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {

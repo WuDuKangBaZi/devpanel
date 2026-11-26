@@ -3,10 +3,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Copy,
   Languages,
+  MemoryStick,
   Minus,
   Palette,
   PanelRightClose,
   PanelRightOpen,
+  PictureInPicture2,
+  Pin,
+  PinOff,
   Settings,
   Square,
   X,
@@ -17,6 +21,8 @@ import {
   type ThemeDefinition,
   type ThemePreference,
 } from "../themes/themes";
+import type { MemorySnapshot } from "../types/project";
+import { formatBytesCompact, getMemoryLevel } from "../utils/memoryFormat";
 import { formatShortcut, type PlatformId } from "../utils/platform";
 import { AppLogo } from "./AppLogo";
 import type { SettingsTab } from "./SettingsModal";
@@ -29,9 +35,14 @@ interface TitleBarProps {
   platform: PlatformId;
   closeToTray: boolean;
   logCollapsed: boolean;
+  alwaysOnTop: boolean;
+  memorySnapshot?: MemorySnapshot | null;
   onToggleLogPanel: () => void;
+  onToggleAlwaysOnTop: () => void;
+  onEnterMiniMode: () => void;
   onStopAllProjects: () => void;
   onOpenSettings: (tab: SettingsTab) => void;
+  onOpenMemoryMonitor: () => void;
   onMaximizedChange?: (maximized: boolean) => void;
 }
 
@@ -54,9 +65,14 @@ export function TitleBar({
   platform,
   closeToTray,
   logCollapsed,
+  alwaysOnTop,
+  memorySnapshot,
   onToggleLogPanel,
+  onToggleAlwaysOnTop,
+  onEnterMiniMode,
   onStopAllProjects,
   onOpenSettings,
+  onOpenMemoryMonitor,
   onMaximizedChange,
 }: TitleBarProps) {
   const { m, locale, toggleLocale } = useI18n();
@@ -126,6 +142,21 @@ export function TitleBar({
     preference === "system"
       ? m.titleBar.systemThemeBadge(displayThemeName)
       : displayThemeName;
+
+  const sysPercent = memorySnapshot?.system.usagePercent ?? null;
+  const memLevel = sysPercent !== null ? getMemoryLevel(sysPercent) : "normal";
+  const managedRss = memorySnapshot?.managedTotalRssBytes ?? 0;
+  const systemTitleText =
+    memorySnapshot && memorySnapshot.system.totalBytes > 0
+      ? `${sysPercent?.toFixed(1)}% (${formatBytesCompact(memorySnapshot.system.usedBytes)} / ${formatBytesCompact(memorySnapshot.system.totalBytes)})`
+      : "--";
+  const managedTitleText = formatBytesCompact(managedRss);
+  const memoryPillColorClass =
+    memLevel === "danger"
+      ? "border-[var(--dp-danger-border)] bg-[var(--dp-danger-soft)] text-[var(--dp-danger-text)]"
+      : memLevel === "warning"
+        ? "border-[var(--dp-warning-border)] bg-[var(--dp-warning-soft)] text-[var(--dp-warning-text)]"
+        : "border-[var(--dp-border)] bg-[var(--dp-surface)] text-[var(--dp-fg-secondary)] hover:border-[var(--dp-border-strong)] hover:bg-[var(--dp-surface-hover)] hover:text-[var(--dp-fg)]";
 
   return (
     <header className="relative z-40 flex h-9 shrink-0 items-center justify-between border-b border-[var(--dp-border)] bg-[var(--dp-titlebar)] select-none">
@@ -214,6 +245,76 @@ export function TitleBar({
             <PanelRightOpen className="h-3.5 w-3.5" aria-hidden="true" />
           ) : (
             <PanelRightClose className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={onToggleAlwaysOnTop}
+          aria-pressed={alwaysOnTop}
+          aria-label={
+            alwaysOnTop
+              ? m.titleBar.unpinWindowAria
+              : m.titleBar.pinWindowAria
+          }
+          title={
+            alwaysOnTop
+              ? m.titleBar.unpinWindowTitle(
+                  formatShortcut("Ctrl+Shift+T", platform)
+                )
+              : m.titleBar.pinWindowTitle(
+                  formatShortcut("Ctrl+Shift+T", platform)
+                )
+          }
+          className={`mr-1 inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border transition-colors ${
+            alwaysOnTop
+              ? "border-[var(--dp-info-border)] bg-[var(--dp-info-soft)] text-[var(--dp-info-text)]"
+              : "border-transparent text-[var(--dp-fg-muted)] hover:bg-[var(--dp-surface-hover)] hover:text-[var(--dp-fg)]"
+          } ${FOCUS_RING}`}
+        >
+          {alwaysOnTop ? (
+            <Pin className="h-3.5 w-3.5" aria-hidden="true" />
+          ) : (
+            <PinOff className="h-3.5 w-3.5" aria-hidden="true" />
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={onEnterMiniMode}
+          aria-label={m.titleBar.enterMiniModeAria}
+          title={m.titleBar.enterMiniModeTitle(
+            formatShortcut("Ctrl+Shift+M", platform)
+          )}
+          className={`mr-1 inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-transparent text-[var(--dp-fg-muted)] transition-colors hover:bg-[var(--dp-surface-hover)] hover:text-[var(--dp-fg)] ${FOCUS_RING}`}
+        >
+          <PictureInPicture2 className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+
+        <button
+          type="button"
+          onClick={onOpenMemoryMonitor}
+          aria-label={m.titleBar.memoryMonitorAria}
+          title={m.titleBar.memoryMonitorTitle(
+            systemTitleText,
+            managedTitleText,
+            formatShortcut("Ctrl+M", platform)
+          )}
+          className={`mr-1 inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border px-2 font-mono-dev text-[11px] font-medium tabular-nums transition-colors ${memoryPillColorClass} ${FOCUS_RING}`}
+        >
+          <MemoryStick
+            className={`h-3.5 w-3.5 ${
+              memLevel === "normal" ? "text-[var(--dp-info)]" : ""
+            }`}
+            aria-hidden="true"
+          />
+          <span>
+            {sysPercent !== null ? `${Math.round(sysPercent)}%` : "--"}
+          </span>
+          {managedRss > 0 && (
+            <span className="hidden text-[10px] opacity-80 md:inline">
+              · {managedTitleText}
+            </span>
           )}
         </button>
 

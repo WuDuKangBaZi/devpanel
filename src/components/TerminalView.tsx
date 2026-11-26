@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -23,6 +24,7 @@ import {
   Eraser,
   ExternalLink,
   FolderOpen,
+  MemoryStick,
   PanelRightClose,
   Play,
   Regex,
@@ -40,8 +42,16 @@ import { useI18n } from "../i18n";
 import type {
   ProjectConfig,
   ProjectStatus,
+  SessionMemoryInfo,
   TerminalSize,
 } from "../types/project";
+import {
+  buildMiniSparklinePoints,
+  formatBytes,
+  formatBytesCompact,
+  formatMemoryShare,
+  getProjectTotalMemoryBytes,
+} from "../utils/memoryFormat";
 import {
   formatClickShortcut,
   formatShortcut,
@@ -53,6 +63,7 @@ import {
   isMultiCommandProject,
   makeSessionKey,
   resolveCommandCwd,
+  resolveSessionOpenUrl,
 } from "../utils/projectCommands";
 
 interface TerminalViewProps {
@@ -62,12 +73,17 @@ interface TerminalViewProps {
   statuses: Record<string, ProjectStatus>;
   exitCodes: Record<string, number | null>;
   detectedUrls: Record<string, string>;
+  sessionMemoryMap?: Record<string, SessionMemoryInfo>;
+  sessionHistoryMap?: Record<string, number[]>;
+  sessionPeakMap?: Record<string, number>;
+  systemTotalMemoryBytes?: number;
   terminalTheme: ITheme;
   settings: AppSettings;
   platform: PlatformId;
   isVisible: boolean;
   searchTrigger?: number;
   onCollapseLog: () => void;
+  onOpenMemoryMonitor?: () => void;
   subscribeOutput: (id: string, cb: (chunk: OutputChunk) => void) => () => void;
   fetchHistory: (id: string) => Promise<OutputChunk>;
   reportTerminalSize: (id: string, size: TerminalSize) => void;
@@ -814,12 +830,17 @@ export function TerminalView({
   statuses,
   exitCodes,
   detectedUrls,
+  sessionMemoryMap,
+  sessionHistoryMap,
+  sessionPeakMap,
+  systemTotalMemoryBytes = 0,
   terminalTheme,
   settings,
   platform,
   isVisible,
   searchTrigger = 0,
   onCollapseLog,
+  onOpenMemoryMonitor,
   subscribeOutput,
   fetchHistory,
   reportTerminalSize,
@@ -841,6 +862,8 @@ export function TerminalView({
   const [mountedIds, setMountedIds] = useState<string[]>([]);
   const [sizesById, setSizesById] = useState<Record<string, TerminalSize>>({});
   const [copiedCwd, setCopiedCwd] = useState(false);
+  const [memDetailsOpen, setMemDetailsOpen] = useState(false);
+  const memDetailsId = useId();
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -1068,6 +1091,20 @@ export function TerminalView({
     onExportLog(`${fileStem}.log`, content);
   }, [selectedProject, activeCommand, activeSessionKey, onExportLog]);
 
+  const activeSessionStatus: ProjectStatus = activeSessionKey
+    ? (statuses[activeSessionKey] ?? "stopped")
+    : "stopped";
+
+  useEffect(() => {
+    setMemDetailsOpen(false);
+  }, [activeSessionKey]);
+
+  useEffect(() => {
+    if (activeSessionStatus === "stopped") {
+      setMemDetailsOpen(false);
+    }
+  }, [activeSessionStatus]);
+
   if (!selectedProject || !activeSessionKey) {
     return (
       <main
@@ -1101,18 +1138,42 @@ export function TerminalView({
   const configuredUrl =
     activeCommand?.url?.trim() || selectedProject.url?.trim() || undefined;
   const liveDetectedUrl = detectedUrls[activeSessionKey];
-  const activeUrl = liveDetectedUrl || configuredUrl;
+  const activeUrl = resolveSessionOpenUrl(configuredUrl, liveDetectedUrl);
   const activeCmdText = activeCommand
     ? activeCommand.command
     : selectedProject.command;
 
-  const status: ProjectStatus = statuses[activeSessionKey] ?? "stopped";
+  const status: ProjectStatus = activeSessionStatus;
   const exitCode = exitCodes[activeSessionKey] ?? null;
   const isTransitioning = status === "starting" || status === "stopping";
   const activeSize = sizesById[activeSessionKey];
   const runningCmdCount = isMulti
     ? countRunningCommands(selectedProject, statuses)
     : 0;
+
+  const activeSessionMemory = sessionMemoryMap?.[activeSessionKey] ?? null;
+  const activeSessionHistory = sessionHistoryMap?.[activeSessionKey] ?? [];
+  const activeSessionPeak =
+    sessionPeakMap?.[activeSessionKey] ?? activeSessionMemory?.rssBytes ?? 0;
+  const projectTotalMemoryBytes = sessionMemoryMap
+    ? getProjectTotalMemoryBytes(selectedProject, sessionMemoryMap)
+    : 0;
+  const activeSharePct =
+    systemTotalMemoryBytes > 0 && activeSessionMemory
+      ? (activeSessionMemory.rssBytes / systemTotalMemoryBytes) * 100
+      : 0;
+  const miniSparklinePoints = buildMiniSparklinePoints(
+    activeSessionHistory,
+    36,
+    12,
+    1.5
+  );
+  const sessionLoadTone =
+    activeSharePct >= 45
+      ? "border-[var(--dp-danger-border)] bg-[var(--dp-danger-soft)] text-[var(--dp-danger-text)]"
+      : activeSharePct >= 25
+        ? "border-[var(--dp-warning-border)] bg-[var(--dp-warning-soft)] text-[var(--dp-warning-text)]"
+        : "border-[var(--dp-border)] bg-[var(--dp-surface)] text-[var(--dp-fg-secondary)] hover:border-[var(--dp-border-strong)] hover:bg-[var(--dp-surface-hover)] hover:text-[var(--dp-fg)]";
 
   const handleCopyCwd = async () => {
     const ok = await copyTextToClipboard(activeCwd);
@@ -1162,6 +1223,81 @@ export function TerminalView({
               </span>
             )}
             <StatusBadge status={status} exitCode={exitCode} />
+            {status !== "stopped" && (
+              <button
+                type="button"
+                aria-expanded={memDetailsOpen}
+                aria-controls={memDetailsId}
+                aria-label={m.terminal.memDetailsToggleAria}
+                onClick={() => setMemDetailsOpen((prev) => !prev)}
+                title={
+                  activeSessionMemory
+                    ? m.terminal.memoryBadgeTitle(
+                        formatBytes(activeSessionMemory.rssBytes),
+                        formatBytes(activeSessionMemory.privateBytes),
+                        activeSessionMemory.processCount
+                      )
+                    : m.terminal.memMeasuring
+                }
+                className={`inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono-dev text-[11px] font-medium tabular-nums transition-colors ${sessionLoadTone} ${FOCUS_RING}`}
+              >
+                <MemoryStick
+                  className={`h-3 w-3 shrink-0 ${
+                    activeSharePct < 25 ? "text-[var(--dp-accent)]" : ""
+                  }`}
+                  aria-hidden="true"
+                />
+                <span>
+                  {activeSessionMemory && activeSessionMemory.rssBytes > 0
+                    ? formatBytesCompact(activeSessionMemory.rssBytes)
+                    : m.terminal.memMeasuring}
+                </span>
+                {miniSparklinePoints && activeSessionMemory && (
+                  <svg
+                    width="36"
+                    height="12"
+                    viewBox="0 0 36 12"
+                    role="img"
+                    aria-label={m.terminal.memSparklineAria(
+                      formatBytes(activeSessionMemory.rssBytes),
+                      formatBytes(activeSessionPeak)
+                    )}
+                    className="hidden shrink-0 sm:block"
+                  >
+                    <polyline
+                      fill="none"
+                      stroke={
+                        activeSharePct >= 45
+                          ? "var(--dp-danger)"
+                          : activeSharePct >= 25
+                            ? "var(--dp-warning)"
+                            : "var(--dp-accent)"
+                      }
+                      strokeWidth="1.4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      points={miniSparklinePoints}
+                    />
+                  </svg>
+                )}
+                {activeSessionMemory && activeSessionMemory.processCount > 1 && (
+                  <span className="text-[10px] opacity-80">
+                    · {activeSessionMemory.processCount}
+                  </span>
+                )}
+                {memDetailsOpen ? (
+                  <ChevronUp
+                    className="h-3 w-3 shrink-0 opacity-75"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <ChevronDown
+                    className="h-3 w-3 shrink-0 opacity-75"
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+            )}
           </div>
 
           <div className="flex shrink-0 flex-wrap items-center gap-1.5 select-none">
@@ -1404,6 +1540,13 @@ export function TerminalView({
                       {cmd.cwd}
                     </span>
                   )}
+                  {cmdStatus !== "stopped" &&
+                    sessionMemoryMap?.[key] &&
+                    sessionMemoryMap[key].rssBytes > 0 && (
+                      <span className="rounded border border-[var(--dp-accent-border)] bg-[var(--dp-accent-soft)] px-1 py-px font-mono-dev text-[10px] tabular-nums text-[var(--dp-accent-text)]">
+                        {formatBytesCompact(sessionMemoryMap[key].rssBytes)}
+                      </span>
+                    )}
                 </button>
               );
             })}
@@ -1454,7 +1597,139 @@ export function TerminalView({
               {activeCmdText}
             </span>
           </div>
+
+          {status !== "stopped" && (
+            <div className="inline-flex flex-wrap items-center gap-1.5 rounded border border-[var(--dp-border)] bg-[var(--dp-bg)] px-2 py-0.5 text-[var(--dp-fg-secondary)]">
+              <span className="text-[var(--dp-fg-muted)]">
+                {m.terminal.memLabel}
+              </span>
+              {activeSessionMemory && activeSessionMemory.rssBytes > 0 ? (
+                <span className="inline-flex flex-wrap items-center gap-1.5 font-mono-dev tabular-nums">
+                  <span className="font-medium text-[var(--dp-fg)]">
+                    {m.terminal.memRss(
+                      formatBytes(activeSessionMemory.rssBytes)
+                    )}
+                  </span>
+                  <span className="text-[var(--dp-border-strong)]">·</span>
+                  <span>
+                    {m.terminal.memPrivate(
+                      formatBytes(activeSessionMemory.privateBytes)
+                    )}
+                  </span>
+                  {systemTotalMemoryBytes > 0 && (
+                    <>
+                      <span className="text-[var(--dp-border-strong)]">·</span>
+                      <span>
+                        {formatMemoryShare(
+                          activeSessionMemory.rssBytes,
+                          systemTotalMemoryBytes
+                        )}
+                      </span>
+                    </>
+                  )}
+                  <span className="text-[var(--dp-border-strong)]">·</span>
+                  <span>
+                    {m.terminal.memPeak(formatBytes(activeSessionPeak))}
+                  </span>
+                  <span className="text-[var(--dp-border-strong)]">·</span>
+                  <span className="text-[var(--dp-fg-muted)]">
+                    {m.terminal.memProcs(activeSessionMemory.processCount)}
+                  </span>
+                </span>
+              ) : (
+                <span className="font-mono-dev text-[var(--dp-fg-muted)]">
+                  {m.terminal.memMeasuring}
+                </span>
+              )}
+              {isMulti &&
+                activeSessionMemory &&
+                projectTotalMemoryBytes > activeSessionMemory.rssBytes && (
+                  <>
+                    <span className="text-[var(--dp-border-strong)]">|</span>
+                    <span className="font-mono-dev text-[var(--dp-info-text)] tabular-nums">
+                      {m.terminal.memProjectTotal(
+                        formatBytesCompact(projectTotalMemoryBytes)
+                      )}
+                    </span>
+                  </>
+                )}
+            </div>
+          )}
         </div>
+
+        {/* Inline Expandable Session Process Tree Memory Breakdown */}
+        {memDetailsOpen && status !== "stopped" && activeSessionMemory && (
+          <div
+            id={memDetailsId}
+            className="mt-2 rounded-lg border border-[var(--dp-border)] bg-[var(--dp-bg)]/90 px-3 py-2 text-[11px]"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-1.5">
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-[var(--dp-fg)]">
+                  {m.terminal.memDetailsTitle}
+                </span>
+                {activeSessionMemory.rootPid && (
+                  <span className="rounded border border-[var(--dp-border)] bg-[var(--dp-surface)] px-1.5 py-px font-mono-dev text-[10px] text-[var(--dp-fg-muted)]">
+                    PID {activeSessionMemory.rootPid}
+                  </span>
+                )}
+              </div>
+              {onOpenMemoryMonitor && (
+                <button
+                  type="button"
+                  onClick={onOpenMemoryMonitor}
+                  className={`cursor-pointer rounded border border-[var(--dp-info-border)] bg-[var(--dp-info-soft)] px-2 py-0.5 text-[10px] font-medium text-[var(--dp-info-text)] transition-opacity hover:opacity-90 ${FOCUS_RING}`}
+                >
+                  {m.terminal.memOpenMonitor}
+                </button>
+              )}
+            </div>
+            <div className="max-h-36 divide-y divide-[var(--dp-border-subtle)] overflow-y-auto">
+              {activeSessionMemory.processes.map((proc) => {
+                const barPct =
+                  activeSessionMemory.rssBytes > 0
+                    ? Math.max(
+                        2,
+                        Math.min(
+                          100,
+                          (proc.rssBytes / activeSessionMemory.rssBytes) * 100
+                        )
+                      )
+                    : 0;
+                return (
+                  <div
+                    key={proc.pid}
+                    className="grid grid-cols-[minmax(0,1fr)_auto_auto_56px] items-center gap-3 py-1 font-mono-dev tabular-nums"
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="shrink-0 text-[10px] text-[var(--dp-fg-muted)]">
+                        #{proc.pid}
+                      </span>
+                      <span className="truncate text-[var(--dp-fg-secondary)]">
+                        {proc.name}
+                      </span>
+                    </div>
+                    <span className="text-[var(--dp-fg)]">
+                      {formatBytes(proc.rssBytes)}
+                    </span>
+                    <span className="hidden text-[10px] text-[var(--dp-fg-muted)] sm:inline">
+                      {m.terminal.memPrivate(formatBytes(proc.privateBytes))}
+                    </span>
+                    <div
+                      aria-hidden="true"
+                      className="h-1.5 w-14 overflow-hidden rounded-full bg-[var(--dp-surface)]"
+                    >
+                      <div
+                        style={{ width: `${barPct}%` }}
+                        className="h-full rounded-full bg-[var(--dp-accent)]"
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </header>
 
       {/* Persistent Terminal Container */}
@@ -1626,6 +1901,36 @@ export function TerminalView({
         </div>
 
         <div className="flex items-center gap-3 font-mono-dev text-[10px] tabular-nums text-[var(--dp-fg-secondary)]">
+          {status !== "stopped" &&
+            activeSessionMemory &&
+            activeSessionMemory.rssBytes > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={onOpenMemoryMonitor}
+                  title={m.terminal.memoryBadgeTitle(
+                    formatBytes(activeSessionMemory.rssBytes),
+                    formatBytes(activeSessionMemory.privateBytes),
+                    activeSessionMemory.processCount
+                  )}
+                  className={`inline-flex cursor-pointer items-center gap-1 rounded px-1 py-0.5 text-[var(--dp-fg-secondary)] transition-colors hover:bg-[var(--dp-surface-hover)] hover:text-[var(--dp-fg)] ${FOCUS_RING}`}
+                >
+                  <MemoryStick
+                    className="h-3 w-3 text-[var(--dp-accent)]"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    RAM {formatBytesCompact(activeSessionMemory.rssBytes)}
+                    {systemTotalMemoryBytes > 0
+                      ? ` (${formatMemoryShare(activeSessionMemory.rssBytes, systemTotalMemoryBytes)})`
+                      : activeSessionMemory.processCount > 1
+                        ? ` (${activeSessionMemory.processCount})`
+                        : ""}
+                  </span>
+                </button>
+                <span className="text-[var(--dp-border-strong)]">|</span>
+              </>
+            )}
           {activeSize && (
             <span>
               {activeSize.cols} × {activeSize.rows}

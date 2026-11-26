@@ -1,15 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LogicalSize } from "@tauri-apps/api/dpi";
+import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AlertCircle, CheckCircle2, Info, X } from "lucide-react";
 import { BindingModal } from "./components/BindingModal";
 import { GroupManagerModal } from "./components/GroupManagerModal";
+import {
+  MemoryMonitorModal,
+  type MemoryMonitorTab,
+} from "./components/MemoryMonitorModal";
+import { MiniView } from "./components/MiniView";
 import { ProjectModal } from "./components/ProjectModal";
 import { SettingsModal, type SettingsTab } from "./components/SettingsModal";
 import { Sidebar } from "./components/Sidebar";
 import { TerminalView } from "./components/TerminalView";
 import { TitleBar } from "./components/TitleBar";
 import { useDevPanel } from "./hooks/useDevPanel";
+import { useMemoryMonitor } from "./hooks/useMemoryMonitor";
 import { useSettings } from "./hooks/useSettings";
 import { useTheme } from "./hooks/useTheme";
 import {
@@ -20,15 +26,26 @@ import {
 import { DEFAULT_DARK_TERMINAL_THEME } from "./themes/themes";
 import type { LaunchBinding, ProjectConfig } from "./types/project";
 import {
+  clampMiniBounds,
+  DEFAULT_MINI_BOUNDS,
+  MINI_MIN_HEIGHT,
+  MINI_MIN_WIDTH,
+  type MiniBounds,
+  type NormalWindowSnapshot,
+} from "./utils/miniMode";
+import {
   getActiveCommandId,
   getProjectAggregateStatus,
 } from "./utils/projectCommands";
+import { installWebviewGuard } from "./utils/webviewGuard";
 import "./App.css";
 
 const MIN_SIDEBAR_WIDTH = 260;
 const MAX_SIDEBAR_WIDTH = 480;
 const DEFAULT_SIDEBAR_WIDTH = 320;
 const SIDEBAR_WIDTH_KEY = "devpanel-sidebar-width";
+const MINI_BOUNDS_KEY = "devpanel-mini-bounds";
+const MINI_PIN_PREF_KEY = "devpanel-mini-always-on-top";
 
 function clampWidth(width: number): number {
   return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width));
@@ -42,6 +59,24 @@ function readStoredSidebarWidth(): number {
     return Number.isFinite(num) ? clampWidth(num) : DEFAULT_SIDEBAR_WIDTH;
   } catch {
     return DEFAULT_SIDEBAR_WIDTH;
+  }
+}
+
+function readStoredMiniBounds(): MiniBounds {
+  try {
+    const raw = window.localStorage.getItem(MINI_BOUNDS_KEY);
+    if (!raw) return DEFAULT_MINI_BOUNDS;
+    return clampMiniBounds(JSON.parse(raw) as Partial<MiniBounds>);
+  } catch {
+    return DEFAULT_MINI_BOUNDS;
+  }
+}
+
+function readStoredMiniPinPref(): boolean {
+  try {
+    return window.localStorage.getItem(MINI_PIN_PREF_KEY) !== "false";
+  } catch {
+    return true;
   }
 }
 
@@ -115,8 +150,16 @@ function App() {
   );
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("appearance");
+  const [memoryMonitorOpen, setMemoryMonitorOpen] = useState(false);
+  const [memoryMonitorTab, setMemoryMonitorTab] =
+    useState<MemoryMonitorTab>("managed");
   const [isMaximized, setIsMaximized] = useState(false);
   const [logCollapsed, setLogCollapsed] = useState(false);
+  const [miniMode, setMiniMode] = useState(false);
+  const [alwaysOnTop, setAlwaysOnTop] = useState(false);
+  const [miniAlwaysOnTopPref, setMiniAlwaysOnTopPref] = useState(
+    readStoredMiniPinPref
+  );
   const [editingProject, setEditingProject] = useState<ProjectConfig | null>(
     null
   );
@@ -134,6 +177,16 @@ function App() {
   logCollapsedRef.current = logCollapsed;
   const isMaximizedRef = useRef(isMaximized);
   isMaximizedRef.current = isMaximized;
+  const miniModeRef = useRef(miniMode);
+  miniModeRef.current = miniMode;
+  const alwaysOnTopRef = useRef(alwaysOnTop);
+  alwaysOnTopRef.current = alwaysOnTop;
+  const miniAlwaysOnTopPrefRef = useRef(miniAlwaysOnTopPref);
+  miniAlwaysOnTopPrefRef.current = miniAlwaysOnTopPref;
+  const miniBoundsRef = useRef<MiniBounds>(readStoredMiniBounds());
+  const normalWindowRef = useRef<NormalWindowSnapshot | null>(null);
+
+  useEffect(() => installWebviewGuard(), []);
 
   useEffect(() => {
     try {
@@ -144,34 +197,80 @@ function App() {
   }, [sidebarWidth]);
 
   useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        MINI_PIN_PREF_KEY,
+        String(miniAlwaysOnTopPref)
+      );
+    } catch {
+      // Ignore storage errors
+    }
+  }, [miniAlwaysOnTopPref]);
+
+  useEffect(() => {
     let mounted = true;
-    let unlisten: (() => void) | null = null;
+    let unlistenResize: (() => void) | null = null;
+    let unlistenMove: (() => void) | null = null;
     try {
       const win = getCurrentWindow();
-      const recordExpandedWidth = async () => {
-        if (logCollapsedRef.current || isMaximizedRef.current) return;
+      const saveWindowMetrics = async () => {
         try {
-          const [innerSize, scaleFactor, maximized] = await Promise.all([
-            win.innerSize(),
-            win.scaleFactor(),
-            win.isMaximized(),
-          ]);
-          if (!mounted || maximized || logCollapsedRef.current) return;
+          const [innerSize, outerPos, scaleFactor, maximized] =
+            await Promise.all([
+              win.innerSize(),
+              win.outerPosition(),
+              win.scaleFactor(),
+              win.isMaximized(),
+            ]);
+          if (!mounted || maximized) return;
           const logicalW = Math.round(innerSize.width / scaleFactor);
-          if (logicalW >= 900) {
+          const logicalH = Math.round(innerSize.height / scaleFactor);
+          const logicalX = Math.round(outerPos.x / scaleFactor);
+          const logicalY = Math.round(outerPos.y / scaleFactor);
+
+          if (miniModeRef.current) {
+            const clamped = clampMiniBounds({
+              width: logicalW,
+              height: logicalH,
+              x: logicalX,
+              y: logicalY,
+            });
+            miniBoundsRef.current = clamped;
+            try {
+              window.localStorage.setItem(
+                MINI_BOUNDS_KEY,
+                JSON.stringify(clamped)
+              );
+            } catch {
+              // Ignore storage errors
+            }
+            return;
+          }
+
+          if (!logCollapsedRef.current && logicalW >= 900) {
             expandedWidthRef.current = logicalW;
           }
         } catch {
           // Ignore
         }
       };
-      void recordExpandedWidth();
+
+      void saveWindowMetrics();
       win
         .onResized(() => {
-          void recordExpandedWidth();
+          void saveWindowMetrics();
         })
         .then((fn) => {
-          if (mounted) unlisten = fn;
+          if (mounted) unlistenResize = fn;
+          else fn();
+        })
+        .catch(() => {});
+      win
+        .onMoved(() => {
+          void saveWindowMetrics();
+        })
+        .then((fn) => {
+          if (mounted) unlistenMove = fn;
           else fn();
         })
         .catch(() => {});
@@ -180,7 +279,8 @@ function App() {
     }
     return () => {
       mounted = false;
-      unlisten?.();
+      unlistenResize?.();
+      unlistenMove?.();
     };
   }, []);
 
@@ -189,7 +289,150 @@ function App() {
     setSettingsOpen(true);
   }, []);
 
+  const setWindowAlwaysOnTop = useCallback(async (next: boolean) => {
+    setAlwaysOnTop(next);
+    alwaysOnTopRef.current = next;
+    if (miniModeRef.current) {
+      setMiniAlwaysOnTopPref(next);
+      miniAlwaysOnTopPrefRef.current = next;
+    }
+    try {
+      await getCurrentWindow().setAlwaysOnTop(next);
+    } catch {
+      // Ignore outside Tauri runtime
+    }
+  }, []);
+
+  const enterMiniMode = useCallback(async () => {
+    if (miniModeRef.current) return;
+
+    setModalOpen(false);
+    setGroupManagerOpen(false);
+    setBindingModalOpen(false);
+    setSettingsOpen(false);
+    setMemoryMonitorOpen(false);
+
+    try {
+      const win = getCurrentWindow();
+      const [innerSize, outerPos, scaleFactor, maximized, currentTop] =
+        await Promise.all([
+          win.innerSize(),
+          win.outerPosition(),
+          win.scaleFactor(),
+          win.isMaximized(),
+          win.isAlwaysOnTop().catch(() => alwaysOnTopRef.current),
+        ]);
+
+      normalWindowRef.current = {
+        width: Math.max(360, Math.round(innerSize.width / scaleFactor)),
+        height: Math.max(520, Math.round(innerSize.height / scaleFactor)),
+        x: Math.round(outerPos.x / scaleFactor),
+        y: Math.round(outerPos.y / scaleFactor),
+        maximized,
+        logCollapsed: logCollapsedRef.current,
+        alwaysOnTop: currentTop,
+      };
+
+      setMiniMode(true);
+      miniModeRef.current = true;
+
+      if (maximized) {
+        await win.unmaximize();
+      }
+      await win.setMinSize(new LogicalSize(MINI_MIN_WIDTH, MINI_MIN_HEIGHT));
+      const bounds = miniBoundsRef.current;
+      await win.setSize(new LogicalSize(bounds.width, bounds.height));
+      if (bounds.x !== undefined && bounds.y !== undefined) {
+        await win
+          .setPosition(new LogicalPosition(bounds.x, bounds.y))
+          .catch(() => {});
+      }
+
+      const pin = miniAlwaysOnTopPrefRef.current;
+      setAlwaysOnTop(pin);
+      alwaysOnTopRef.current = pin;
+      await win.setAlwaysOnTop(pin).catch(() => {});
+    } catch {
+      setMiniMode(true);
+      miniModeRef.current = true;
+    }
+  }, []);
+
+  const exitMiniMode = useCallback(
+    async (options?: { expandLog?: boolean }) => {
+      if (!miniModeRef.current) return;
+
+      const snap = normalWindowRef.current;
+      const nextCollapsed = options?.expandLog
+        ? false
+        : (snap?.logCollapsed ?? logCollapsedRef.current);
+
+      try {
+        const win = getCurrentWindow();
+        const [innerSize, outerPos, scaleFactor] = await Promise.all([
+          win.innerSize(),
+          win.outerPosition(),
+          win.scaleFactor(),
+        ]);
+        const savedMini = clampMiniBounds({
+          width: innerSize.width / scaleFactor,
+          height: innerSize.height / scaleFactor,
+          x: outerPos.x / scaleFactor,
+          y: outerPos.y / scaleFactor,
+        });
+        miniBoundsRef.current = savedMini;
+        try {
+          window.localStorage.setItem(
+            MINI_BOUNDS_KEY,
+            JSON.stringify(savedMini)
+          );
+        } catch {
+          // Ignore storage errors
+        }
+
+        setLogCollapsed(nextCollapsed);
+        logCollapsedRef.current = nextCollapsed;
+        setMiniMode(false);
+        miniModeRef.current = false;
+
+        const restorePin = snap?.alwaysOnTop ?? false;
+        setAlwaysOnTop(restorePin);
+        alwaysOnTopRef.current = restorePin;
+        await win.setAlwaysOnTop(restorePin).catch(() => {});
+
+        const minW = nextCollapsed ? 360 : 900;
+        const minH = nextCollapsed ? 520 : 560;
+        const targetW = options?.expandLog
+          ? Math.max(900, expandedWidthRef.current, snap?.width ?? 1200)
+          : Math.max(minW, snap?.width ?? 1200);
+        const targetH = Math.max(minH, snap?.height ?? 760);
+
+        await win.setMinSize(new LogicalSize(minW, minH));
+        await win.setSize(new LogicalSize(targetW, targetH));
+        if (snap?.x !== undefined && snap?.y !== undefined) {
+          await win
+            .setPosition(new LogicalPosition(snap.x, snap.y))
+            .catch(() => {});
+        }
+        if (snap?.maximized) {
+          await win.maximize().catch(() => {});
+        }
+      } catch {
+        setLogCollapsed(nextCollapsed);
+        logCollapsedRef.current = nextCollapsed;
+        setMiniMode(false);
+        miniModeRef.current = false;
+      }
+    },
+    []
+  );
+
   const toggleLogPanel = useCallback(async () => {
+    if (miniModeRef.current) {
+      await exitMiniMode({ expandLog: true });
+      return;
+    }
+
     const nextCollapsed = !logCollapsed;
     setLogCollapsed(nextCollapsed);
 
@@ -218,7 +461,7 @@ function App() {
     } catch {
       // Ignore outside Tauri runtime or if window resize is unavailable
     }
-  }, [logCollapsed, sidebarWidth]);
+  }, [logCollapsed, sidebarWidth, exitMiniMode]);
 
   const selectedProject = useMemo(
     () => projects.find((p) => p.id === selectedId) ?? null,
@@ -230,12 +473,60 @@ function App() {
     [selectedProject, selectedCommandByProject]
   );
 
+  const activeSessionSignature = useMemo(
+    () =>
+      Object.entries(statuses)
+        .filter(([, s]) => s === "running" || s === "starting")
+        .map(([key]) => key)
+        .sort()
+        .join("|"),
+    [statuses]
+  );
+
+  const memoryMonitor = useMemoryMonitor({
+    isModalOpen: memoryMonitorOpen,
+    includeTopProcesses:
+      memoryMonitorOpen && memoryMonitorTab === "processes",
+    activeSessionSignature,
+  });
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.altKey) {
         return;
       }
       if (modalOpen || settingsOpen || groupManagerOpen || bindingModalOpen) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (event.shiftKey && key === "m") {
+        event.preventDefault();
+        if (miniModeRef.current) {
+          void exitMiniMode();
+        } else {
+          void enterMiniMode();
+        }
+        return;
+      }
+
+      if (event.shiftKey && key === "t") {
+        event.preventDefault();
+        void setWindowAlwaysOnTop(!alwaysOnTopRef.current);
+        return;
+      }
+
+      if (!event.shiftKey && key === "m") {
+        event.preventDefault();
+        if (miniModeRef.current) {
+          void exitMiniMode().then(() => setMemoryMonitorOpen(true));
+        } else {
+          setMemoryMonitorOpen((open) => !open);
+        }
+        return;
+      }
+
+      if (memoryMonitorOpen) {
         return;
       }
 
@@ -252,10 +543,10 @@ function App() {
             target.isContentEditable)
       );
 
-      const key = event.key.toLowerCase();
+      const keyLower = key;
 
-      if (event.shiftKey && key === "r") {
-        if (isFormControl || !selectedProject) return;
+      if (event.shiftKey && keyLower === "r") {
+        if (isFormControl || !selectedProject || miniModeRef.current) return;
         event.preventDefault();
         void restartProject(selectedProject.id, selectedCommandId);
         return;
@@ -263,26 +554,45 @@ function App() {
 
       if (event.shiftKey) return;
 
-      if (key === "j") {
+      if (keyLower === "j") {
         if (isFormControl) return;
         event.preventDefault();
         void toggleLogPanel();
-      } else if (key === ",") {
+      } else if (keyLower === ",") {
         if (isFormControl) return;
         event.preventDefault();
-        openSettings("general");
-      } else if (key === "k") {
+        if (miniModeRef.current) {
+          void exitMiniMode().then(() => openSettings("general"));
+        } else {
+          openSettings("general");
+        }
+      } else if (keyLower === "k") {
+        if (miniModeRef.current) return;
         event.preventDefault();
         searchInputRef.current?.focus();
         searchInputRef.current?.select();
-      } else if (key === "n") {
+      } else if (keyLower === "n") {
         if (isFormControl) return;
         event.preventDefault();
-        setEditingProject(null);
-        setCloningProject(null);
-        setModalOpen(true);
-      } else if (key === "f") {
-        if (isFormControl || logCollapsed || !selectedProject) return;
+        const openNewProject = () => {
+          setEditingProject(null);
+          setCloningProject(null);
+          setModalOpen(true);
+        };
+        if (miniModeRef.current) {
+          void exitMiniMode().then(openNewProject);
+        } else {
+          openNewProject();
+        }
+      } else if (keyLower === "f") {
+        if (
+          isFormControl ||
+          logCollapsed ||
+          miniModeRef.current ||
+          !selectedProject
+        ) {
+          return;
+        }
         event.preventDefault();
         setTerminalSearchTrigger((n) => n + 1);
       }
@@ -295,12 +605,16 @@ function App() {
     settingsOpen,
     groupManagerOpen,
     bindingModalOpen,
+    memoryMonitorOpen,
     logCollapsed,
     selectedProject,
     selectedCommandId,
     toggleLogPanel,
     openSettings,
     restartProject,
+    enterMiniMode,
+    exitMiniMode,
+    setWindowAlwaysOnTop,
   ]);
 
   useEffect(() => {
@@ -354,9 +668,54 @@ function App() {
     <I18nContext.Provider value={i18n}>
     <div
       className={`flex h-screen w-screen flex-col overflow-hidden bg-[var(--dp-bg)] text-[var(--dp-fg)] ${
-        !isMaximized ? "border border-[var(--dp-border)]" : ""
+        !isMaximized && !miniMode ? "border border-[var(--dp-border)]" : ""
       }`}
     >
+      {miniMode && (
+        <MiniView
+          projects={projects}
+          bindings={bindings}
+          statuses={statuses}
+          detectedUrls={detectedUrls}
+          sessionMemoryMap={memoryMonitor.sessionMemoryMap}
+          memorySnapshot={memoryMonitor.snapshot}
+          runningCount={runningProjectCount}
+          totalCount={projects.length}
+          alwaysOnTop={alwaysOnTop}
+          closeToTray={settings.closeToTray}
+          platform={platform}
+          onToggleAlwaysOnTop={() => void setWindowAlwaysOnTop(!alwaysOnTop)}
+          onExitMini={() => void exitMiniMode()}
+          onOpenSessionTerminal={(projectId, commandId) => {
+            selectProject(projectId, commandId);
+            void exitMiniMode({ expandLog: true });
+          }}
+          onOpenMemoryMonitor={() => {
+            void exitMiniMode().then(() => setMemoryMonitorOpen(true));
+          }}
+          onStart={(projectId, commandId) =>
+            void startProject(projectId, commandId)
+          }
+          onStop={(projectId, commandId) =>
+            void stopProject(projectId, commandId)
+          }
+          onRestart={(projectId, commandId) =>
+            void restartProject(projectId, commandId)
+          }
+          onStopAllProjects={stopAllProjects}
+          onStartBinding={(binding) => void startBinding(binding)}
+          onStopBinding={(binding) => void stopBinding(binding)}
+          onOpenUrl={openUrl}
+        />
+      )}
+
+      <div
+        className={
+          miniMode
+            ? "hidden"
+            : "flex min-h-0 flex-1 flex-col overflow-hidden"
+        }
+      >
       <TitleBar
         runningCount={runningProjectCount}
         totalCount={projects.length}
@@ -365,9 +724,14 @@ function App() {
         platform={platform}
         closeToTray={settings.closeToTray}
         logCollapsed={logCollapsed}
+        alwaysOnTop={alwaysOnTop}
+        memorySnapshot={memoryMonitor.snapshot}
         onToggleLogPanel={toggleLogPanel}
+        onToggleAlwaysOnTop={() => void setWindowAlwaysOnTop(!alwaysOnTop)}
+        onEnterMiniMode={() => void enterMiniMode()}
         onStopAllProjects={stopAllProjects}
         onOpenSettings={openSettings}
+        onOpenMemoryMonitor={() => setMemoryMonitorOpen(true)}
         onMaximizedChange={setIsMaximized}
       />
 
@@ -381,6 +745,7 @@ function App() {
           bindings={bindings}
           statuses={statuses}
           detectedUrls={detectedUrls}
+          sessionMemoryMap={memoryMonitor.sessionMemoryMap}
           selectedId={selectedId}
           selectedCommandId={selectedCommandId}
           configPath={configPath}
@@ -475,12 +840,19 @@ function App() {
             statuses={statuses}
             exitCodes={exitCodes}
             detectedUrls={detectedUrls}
+            sessionMemoryMap={memoryMonitor.sessionMemoryMap}
+            sessionHistoryMap={memoryMonitor.sessionHistory}
+            sessionPeakMap={memoryMonitor.sessionPeaks}
+            systemTotalMemoryBytes={
+              memoryMonitor.snapshot?.system.totalBytes ?? 0
+            }
             terminalTheme={effectiveTerminalTheme}
             settings={settings}
             platform={platform}
-            isVisible={!logCollapsed}
+            isVisible={!logCollapsed && !miniMode}
             searchTrigger={terminalSearchTrigger}
             onCollapseLog={toggleLogPanel}
+            onOpenMemoryMonitor={() => setMemoryMonitorOpen(true)}
             subscribeOutput={subscribeOutput}
             fetchHistory={fetchHistory}
             reportTerminalSize={reportTerminalSize}
@@ -503,6 +875,7 @@ function App() {
             onNotify={pushToast}
           />
         </div>
+      </div>
       </div>
 
       <ProjectModal
@@ -561,6 +934,36 @@ function App() {
         onExportConfig={exportConfigFile}
         onImportConfig={importConfigFile}
         onOpenUrl={openUrl}
+      />
+
+      <MemoryMonitorModal
+        isOpen={memoryMonitorOpen}
+        activeTab={memoryMonitorTab}
+        onTabChange={setMemoryMonitorTab}
+        onClose={() => setMemoryMonitorOpen(false)}
+        snapshot={memoryMonitor.snapshot}
+        history={memoryMonitor.history}
+        projects={projects}
+        paused={memoryMonitor.paused}
+        onTogglePaused={() => memoryMonitor.setPaused((p) => !p)}
+        intervalMs={memoryMonitor.intervalMs}
+        onChangeInterval={memoryMonitor.setIntervalMs}
+        loading={memoryMonitor.loading}
+        error={memoryMonitor.error}
+        onRefresh={memoryMonitor.refreshNow}
+        onClearHistory={memoryMonitor.clearHistory}
+        onSelectSession={(projectId, commandId) => {
+          selectProject(projectId, commandId);
+          if (logCollapsed) {
+            void toggleLogPanel();
+          }
+        }}
+        onRestartSession={(projectId, commandId) =>
+          void restartProject(projectId, commandId)
+        }
+        onStopSession={(projectId, commandId) =>
+          void stopProject(projectId, commandId)
+        }
       />
 
       {/* Toast Notifications */}

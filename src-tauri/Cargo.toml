@@ -1,6 +1,6 @@
 [package]
 name = "devpanel"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local multi-project & multi-command interactive PTY terminal orchestrator"
 authors = ["Felix Yu <wudukangbazi@gmail.com>"]
 license = "MIT"
@@ -38,9 +38,14 @@ tauri-plugin-single-instance = "2"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
+  "Win32_System_ProcessStatus",
+  "Win32_System_SystemInformation",
   "Win32_System_Threading",
 ] }
+webview2-com = "0.39"
+windows-core = "0.62"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

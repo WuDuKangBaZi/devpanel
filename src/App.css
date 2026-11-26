@@ -297,9 +297,15 @@ body,
   }
 }
 
+dialog.devpanel-dialog:modal {
+  overscroll-behavior: contain;
+}
+
 dialog.devpanel-dialog::backdrop {
   background-color: var(--dp-scrim);
   backdrop-filter: blur(4px);
+  overflow: hidden;
+  overscroll-behavior: contain;
 }
 
 .dp-input:user-invalid {

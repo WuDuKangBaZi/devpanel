@@ -96,3 +96,51 @@ export interface TerminalSize {
   cols: number;
   rows: number;
 }
+
+export interface SystemMemoryInfo {
+  totalBytes: number;
+  usedBytes: number;
+  availableBytes: number;
+  usagePercent: number;
+  swapTotalBytes: number;
+  swapUsedBytes: number;
+}
+
+export interface ProcessMemoryEntry {
+  pid: number;
+  parentPid: number;
+  name: string;
+  rssBytes: number;
+  privateBytes: number;
+  sessionKey?: string | null;
+}
+
+export interface SessionMemoryInfo {
+  sessionKey: string;
+  rootPid?: number | null;
+  rssBytes: number;
+  privateBytes: number;
+  processCount: number;
+  processes: ProcessMemoryEntry[];
+}
+
+export interface MemorySnapshot {
+  timestampMs: number;
+  system: SystemMemoryInfo;
+  appRssBytes: number;
+  appPrivateBytes: number;
+  appProcessCount: number;
+  managedTotalRssBytes: number;
+  managedTotalPrivateBytes: number;
+  managedProcessCount: number;
+  sessions: SessionMemoryInfo[];
+  topProcesses: ProcessMemoryEntry[];
+}
+
+export interface MemoryHistoryPoint {
+  timestampMs: number;
+  systemPercent: number;
+  systemUsedBytes: number;
+  managedRssBytes: number;
+  appRssBytes: number;
+}

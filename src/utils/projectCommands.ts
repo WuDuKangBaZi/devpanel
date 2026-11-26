@@ -189,3 +189,41 @@ export function getBindingAggregateStatus(
   return "stopped";
 }
 
+export function resolveSessionOpenUrl(
+  configuredUrl: string | undefined | null,
+  detectedUrl?: string | null
+): string | undefined {
+  const configured = configuredUrl?.trim();
+  if (!configured) {
+    return undefined;
+  }
+  const detected = detectedUrl?.trim();
+  return detected || configured;
+}
+
+export function resolveProjectOpenUrl(
+  project: ProjectConfig,
+  detectedUrls?: Record<string, string>
+): string | undefined {
+  if (project.commands && project.commands.length > 0) {
+    const projectUrl = project.url?.trim();
+    let fallbackConfigured: string | undefined;
+
+    for (const cmd of project.commands) {
+      const configured = cmd.url?.trim() || projectUrl;
+      if (!configured) continue;
+      if (!fallbackConfigured) {
+        fallbackConfigured = configured;
+      }
+      const detected = detectedUrls?.[makeSessionKey(project.id, cmd.id)]?.trim();
+      if (detected) {
+        return detected;
+      }
+    }
+
+    return fallbackConfigured;
+  }
+
+  return resolveSessionOpenUrl(project.url, detectedUrls?.[project.id]);
+}
+

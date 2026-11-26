@@ -3,6 +3,7 @@ use crate::config::{
 };
 use crate::detector::{self, DetectedProject};
 use crate::i18n::{self, TrayMenuState};
+use crate::memory_monitor::{self, MemorySnapshot};
 use crate::pty_manager::{self, ProjectStatus, PtyHistoryPayload, PtyManager};
 use crate::CloseToTray;
 use std::collections::HashMap;
@@ -723,4 +724,25 @@ pub async fn check_port_in_use(port: u16) -> bool {
     })
     .await
     .unwrap_or(false)
+}
+
+#[tauri::command]
+pub async fn get_memory_snapshot(
+    pty: State<'_, PtyManager>,
+    include_top_processes: Option<bool>,
+    top_limit: Option<usize>,
+) -> Result<MemorySnapshot, String> {
+    let active_sessions = pty.get_active_session_processes();
+    let include_top = include_top_processes.unwrap_or(false);
+    let limit = top_limit.unwrap_or(30);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(memory_monitor::collect_memory_snapshot(
+            &active_sessions,
+            include_top,
+            limit,
+        ))
+    })
+    .await
+    .map_err(|e| format!("Memory monitor task failed: {}", e))?
 }

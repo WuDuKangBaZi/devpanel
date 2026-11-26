@@ -57,11 +57,12 @@ pub struct PtyUrlEvent {
 #[cfg(windows)]
 mod win_job {
     use std::ffi::c_void;
-    use std::mem::size_of;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use std::mem::{offset_of, size_of};
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_MORE_DATA, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList,
+        JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+        TerminateJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
     };
     use windows_sys::Win32::System::Threading::{
@@ -118,6 +119,56 @@ mod win_job {
                 let _ = TerminateJobObject(self.handle as HANDLE, 1);
             }
         }
+
+        pub fn list_pids(&self) -> Vec<u32> {
+            const HEADER_BYTES: usize = offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList);
+            const WORD_BYTES: usize = size_of::<usize>();
+            let header_words = HEADER_BYTES.div_ceil(WORD_BYTES);
+            let mut slot_cap: usize = 128;
+
+            for attempt in 0..2 {
+                let mut buf = vec![0usize; header_words + slot_cap];
+                let byte_len = (buf.len() * WORD_BYTES) as u32;
+                let mut returned: u32 = 0;
+
+                let ok = unsafe {
+                    QueryInformationJobObject(
+                        self.handle as HANDLE,
+                        JobObjectBasicProcessIdList,
+                        buf.as_mut_ptr() as *mut c_void,
+                        byte_len,
+                        &mut returned,
+                    )
+                };
+
+                let header = unsafe { &*(buf.as_ptr() as *const JOBOBJECT_BASIC_PROCESS_ID_LIST) };
+
+                if ok != 0 {
+                    let count = (header.NumberOfProcessIdsInList as usize).min(slot_cap);
+                    let list_ptr = unsafe {
+                        (buf.as_ptr() as *const u8).add(HEADER_BYTES) as *const usize
+                    };
+                    let mut pids = Vec::with_capacity(count);
+                    for idx in 0..count {
+                        let raw_pid = unsafe { *list_ptr.add(idx) };
+                        if raw_pid > 0 && raw_pid <= u32::MAX as usize {
+                            pids.push(raw_pid as u32);
+                        }
+                    }
+                    return pids;
+                }
+
+                let err = unsafe { GetLastError() };
+                if attempt == 0 && err == ERROR_MORE_DATA {
+                    let assigned = header.NumberOfAssignedProcesses as usize;
+                    slot_cap = assigned.saturating_add(32).clamp(128, 4096);
+                    continue;
+                }
+                break;
+            }
+
+            Vec::new()
+        }
     }
 
     impl Drop for WindowsJob {
@@ -129,6 +180,13 @@ mod win_job {
             }
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ActiveSessionProcessInfo {
+    pub session_key: String,
+    pub root_pid: Option<u32>,
+    pub job_pids: Vec<u32>,
 }
 
 struct PtySession {
@@ -201,6 +259,64 @@ impl PtyManager {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default()
+    }
+
+    pub fn get_active_session_processes(&self) -> Vec<ActiveSessionProcessInfo> {
+        #[cfg(windows)]
+        let collected: Vec<(String, Option<u32>, Option<Arc<win_job::WindowsJob>>)> = {
+            let Ok(guard) = self.sessions.lock() else {
+                return Vec::new();
+            };
+            guard
+                .iter()
+                .filter_map(|(id, entry)| match entry {
+                    SessionEntry::Active(s) if s.status != ProjectStatus::Stopped => {
+                        Some((id.clone(), s.pid, s.job.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+
+        #[cfg(not(windows))]
+        let collected: Vec<(String, Option<u32>)> = {
+            let Ok(guard) = self.sessions.lock() else {
+                return Vec::new();
+            };
+            guard
+                .iter()
+                .filter_map(|(id, entry)| match entry {
+                    SessionEntry::Active(s) if s.status != ProjectStatus::Stopped => {
+                        Some((id.clone(), s.pid))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+
+        #[cfg(windows)]
+        {
+            collected
+                .into_iter()
+                .map(|(session_key, root_pid, job)| ActiveSessionProcessInfo {
+                    session_key,
+                    root_pid,
+                    job_pids: job.map(|j| j.list_pids()).unwrap_or_default(),
+                })
+                .collect()
+        }
+
+        #[cfg(not(windows))]
+        {
+            collected
+                .into_iter()
+                .map(|(session_key, root_pid)| ActiveSessionProcessInfo {
+                    session_key,
+                    root_pid,
+                    job_pids: Vec::new(),
+                })
+                .collect()
+        }
     }
 
     pub fn set_subscription(&self, id: &str, subscribed: bool) {

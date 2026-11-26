@@ -50,11 +50,13 @@ Pick any local folder and DevPanel automatically inspects manifests to pre-fill 
 
 ### 4. Enhanced Interactive PTY Terminal
 - **Lossless Ring Buffer**: Rust maintains a 256KB UTF-8/ANSI-aligned ring buffer with monotonic sequence numbers (`seq`) so switching tabs never drops output, while unsubscribed background sessions incur zero IPC serialization overhead.
-- **Live Local URL Sniffer**: Automatically detects runtime `localhost` / `127.0.0.1` / `0.0.0.0` URLs printed to stdout (even when a dev server auto-increments its port) and surfaces a one-click **Open** button.
+- **Live URL Sniffing & Per-Session Memory HUD**: When a project configures a local URL, DevPanel dynamically tracks listening ports; every running session and PTY header/footer displays live process-tree RSS, private memory, peak usage, and an inline sparkline with expandable process-tree breakdown.
 - **Search & Developer Ergonomics**: Floating `Ctrl+F` search bar (case-sensitive, regex, match counter), `Ctrl/Cmd + Click` web links, smart `Ctrl+C` copy-on-selection, context menu, `.log` file export, and one-click open in external editor (`code` / `cursor` / `windsurf`) or system terminal.
 
-### 5. Native Desktop Polish & Full i18n
-- **Zero-Orphan Process Tree Cleanup**: Sends `Ctrl+C` first for graceful shutdown, then escalates to Windows **Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) + `taskkill /F /T`** or Unix process-group `SIGTERM` → `SIGKILL` so child processes never leak or hold ports.
+### 5. Native Desktop Polish, Memory Monitor & Mini Mode
+- **Real-Time Memory Monitor (`Ctrl + M`)**: Cross-platform tracking of system RAM, full process-tree usage per managed service, and top system processes with a 60-sample live SVG sparkline, sortable tables, and direct jump/restart/stop controls.
+- **Mini Floating Mode & Always-on-Top (`Ctrl + Shift + M` / `Ctrl + Shift + T`)**: Collapse into a compact, draggable, always-on-top mini window focused on running services, bindings, and live memory without interrupting active PTY sessions, restoring exact window bounds and pin state on exit.
+- **Zero-Orphan Cleanup & WebView2 Hardening**: Sends `Ctrl+C` first for graceful shutdown, then escalates to Windows **Job Objects (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) + `taskkill /F /T`** or Unix process-group `SIGTERM` → `SIGKILL`; disables native WebView2 context menus and browser/DevTools shortcuts on Windows.
 - **System Tray & Single-Instance Guard**: Optionally minimize to the system tray on close (with live running process count in the tray tooltip) and focus the existing window on second launch.
 - **5 Built-in Themes & Full Bilingual UI**: Includes *Midnight*, *Obsidian*, *Nord*, *Daylight*, and *Warm Paper* themes (plus OS sync and dark-terminal-in-light-mode option), with full **English & Simplified Chinese (`zh-CN`)** localization across both React UI and native Rust tray/dialogs.
 
@@ -146,6 +148,9 @@ DevPanel watches this file via `notify` for **live hot-reload** on external edit
 | Create new project | `Ctrl + N` | `⌘ + N` |
 | Restart active project / command | `Ctrl + Shift + R` | `⌘ + ⇧ + R` |
 | Open Settings | `Ctrl + ,` | `⌘ + ,` |
+| Open Memory Monitor | `Ctrl + M` | `⌘ + M` |
+| Toggle Mini floating mode | `Ctrl + Shift + M` | `⌘ + ⇧ + M` |
+| Toggle Always on Top | `Ctrl + Shift + T` | `⌘ + ⇧ + T` |
 | Copy terminal selection (or send `SIGINT` if none) | `Ctrl + C` / `Ctrl + Shift + C` | `⌘ + C` |
 | Open URL link in terminal output | `Ctrl + Click` | `⌘ + Click` |
 
