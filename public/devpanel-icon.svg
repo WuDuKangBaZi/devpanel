@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="dp-bg-grad" x1="48" y1="32" x2="464" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#13203A" />
+      <stop offset="100%" stop-color="#060B16" />
+    </linearGradient>
+    <linearGradient id="dp-accent-grad" x1="112" y1="184" x2="248" y2="372" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4ADE80" />
+      <stop offset="100%" stop-color="#16A34A" />
+    </linearGradient>
+    <linearGradient id="dp-bar-grad" x1="256" y1="216" x2="404" y2="216" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#22C55E" />
+    </linearGradient>
+  </defs>
+
+  <!-- Outer rounded-square tile -->
+  <rect x="20" y="20" width="472" height="472" rx="112" fill="url(#dp-bg-grad)" />
+  <rect x="24" y="24" width="464" height="464" rx="108" stroke="#334155" stroke-width="8" />
+
+  <!-- Window top header divider -->
+  <path d="M24 132H488" stroke="#24344D" stroke-width="6" />
+
+  <!-- Minimalist window traffic lights -->
+  <circle cx="98" cy="82" r="14" fill="#22C55E" />
+  <circle cx="144" cy="82" r="14" fill="#F59E0B" />
+  <circle cx="190" cy="82" r="14" fill="#38BDF8" />
+
+  <!-- Subtle top-right active pill -->
+  <rect x="336" y="70" width="96" height="24" rx="12" fill="#1E293B" stroke="#334155" stroke-width="4" />
+  <circle cx="356" cy="82" r="6" fill="#4ADE80" />
+
+  <!-- Terminal prompt chevron '>' -->
+  <path
+    d="M108 202L216 286L108 370"
+    stroke="url(#dp-accent-grad)"
+    stroke-width="38"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Multi-command orchestration bars -->
+  <rect x="256" y="204" width="148" height="32" rx="16" fill="url(#dp-bar-grad)" />
+  <rect x="256" y="270" width="114" height="32" rx="16" fill="#38BDF8" />
+  <rect x="256" y="336" width="148" height="32" rx="16" fill="#64748B" />
+</svg>
